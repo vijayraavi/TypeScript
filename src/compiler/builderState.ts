@@ -24,6 +24,19 @@ namespace ts {
         }
     }
 
+    export interface ReusableBuilderState {
+        /**
+         * Information of the file eg. its version, signature etc
+         */
+        fileInfos: Map<BuilderState.FileInfo>;
+        /**
+         * Contains the map of ReferencedSet=Referenced files of the file if module emit is enabled
+         * Otherwise undefined
+         * Thus non undefined value indicates, module emit
+         */
+        readonly referencedMap: ReadonlyMap<BuilderState.ReferencedSet> | undefined;
+    }
+
     export interface BuilderState {
         /**
          * Information of the file eg. its version, signature etc
@@ -127,14 +140,14 @@ namespace ts.BuilderState {
     /**
      * Returns true if oldState is reusable, that is the emitKind = module/non module has not changed
      */
-    export function canReuseOldState(newReferencedMap: ReadonlyMap<ReferencedSet>, oldState: Readonly<BuilderState> | undefined) {
+    export function canReuseOldState(newReferencedMap: ReadonlyMap<ReferencedSet>, oldState: Readonly<ReusableBuilderState> | undefined) {
         return oldState && !oldState.referencedMap === !newReferencedMap;
     }
 
     /**
      * Creates the state of file references and signature for the new program from oldState if it is safe
      */
-    export function create(newProgram: Program, getCanonicalFileName: GetCanonicalFileName, oldState?: Readonly<BuilderState>): BuilderState {
+    export function create(newProgram: Program, getCanonicalFileName: GetCanonicalFileName, oldState?: Readonly<ReusableBuilderState>): BuilderState {
         const fileInfos = createMap<FileInfo>();
         const referencedMap = newProgram.getCompilerOptions().module !== ModuleKind.None ? createMap<ReferencedSet>() : undefined;
         const hasCalledUpdateShapeSignature = createMap<true>();

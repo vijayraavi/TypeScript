@@ -465,6 +465,12 @@ namespace ts {
         // If any of these options change, we can't reuse old source file even if version match
         // The change in options like these could result in change in syntax tree change
         const oldOptions = program && program.getCompilerOptions();
+        return changeInOptionsNeedNewSourceFile(oldOptions, newOptions);
+    }
+
+    /*@internal*/
+    export function changeInOptionsNeedNewSourceFile(oldOptions: CompilerOptions | undefined, newOptions: CompilerOptions) {
+        debugger;
         return oldOptions && (
             oldOptions.target !== newOptions.target ||
             oldOptions.module !== newOptions.module ||
@@ -474,7 +480,7 @@ namespace ts {
             oldOptions.allowJs !== newOptions.allowJs ||
             oldOptions.disableSizeLimit !== newOptions.disableSizeLimit ||
             oldOptions.baseUrl !== newOptions.baseUrl ||
-            !equalOwnProperties(oldOptions.paths, newOptions.paths)
+            !equalOwnProperties(oldOptions.paths, newOptions.paths, arraysEqual)
         );
     }
 

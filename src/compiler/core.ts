@@ -854,7 +854,7 @@ namespace ts {
             !arrayIsEqualTo(oldOptions.lib, newOptions.lib) ||
             !arrayIsEqualTo(oldOptions.typeRoots, newOptions.typeRoots) ||
             !arrayIsEqualTo(oldOptions.rootDirs, newOptions.rootDirs) ||
-            !equalOwnProperties(oldOptions.paths, newOptions.paths);
+            !equalOwnProperties(oldOptions.paths, newOptions.paths, arraysEqual);
     }
 
     /**

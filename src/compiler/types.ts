@@ -4356,6 +4356,7 @@ namespace ts {
         typeRoots?: string[];
         /*@internal*/ version?: boolean;
         /*@internal*/ watch?: boolean;
+        /*@internal*/ incremental?: boolean;
         esModuleInterop?: boolean;
 
         [option: string]: CompilerOptionsValue | TsConfigSourceFile | undefined;

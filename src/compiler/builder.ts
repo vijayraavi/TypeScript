@@ -1,9 +1,59 @@
 /*@internal*/
 namespace ts {
+    export interface ReusableSemanticDiagnostics {
+        get(key: string): ReadonlyArray<Diagnostic> | undefined;
+        has(key: string): boolean;
+    }
     /**
      * State to store the changed files, affected files and cache semantic diagnostics
      */
-    export interface BuilderProgramState extends BuilderState {
+    export interface ReusableBuilderProgramState extends ReusableBuilderState {
+        /**
+         * Cache of semantic diagnostics for files with their Path being the key
+         */
+        semanticDiagnosticsPerFile: ReusableSemanticDiagnostics | undefined;
+        /**
+         * The map has key by source file's path that has been changed
+         */
+        changedFilesSet?: Map<true>;
+        /**
+         * Set of affected files being iterated
+         */
+        affectedFiles?: ReadonlyArray<SourceFile> | undefined;
+        /**
+         * Current index to retrieve affected file from
+         */
+        affectedFilesIndex?: number | undefined;
+        /**
+         * Current changed file for iterating over affected files
+         */
+        currentChangedFilePath?: Path | undefined;
+        /**
+         * Map of file signatures, with key being file path, calculated while getting current changed file's affected files
+         * These will be commited whenever the iteration through affected files of current changed file is complete
+         */
+        currentAffectedFilesSignatures?: Map<string> | undefined;
+        /**
+         * Already seen affected files
+         */
+        seenAffectedFiles?: Map<true> | undefined;
+        /**
+         * program corresponding to this state
+         */
+        program?: Program;
+    }
+
+    /**
+     * Builder to manage the program state changes
+     */
+    export interface ReusableBuilderProgram {
+        getState(): ReusableBuilderProgramState;
+    }
+
+    /**
+     * State to store the changed files, affected files and cache semantic diagnostics
+     */
+    export interface BuilderProgramState extends BuilderState  {
         /**
          * Cache of semantic diagnostics for files with their Path being the key
          */
@@ -47,7 +97,7 @@ namespace ts {
     /**
      * Create the state so that we can iterate on changedFiles/affected files
      */
-    function createBuilderProgramState(newProgram: Program, getCanonicalFileName: GetCanonicalFileName, oldState?: Readonly<BuilderProgramState>): BuilderProgramState {
+    function createBuilderProgramState(newProgram: Program, getCanonicalFileName: GetCanonicalFileName, oldState?: Readonly<ReusableBuilderProgramState>): BuilderProgramState {
         const state = BuilderState.create(newProgram, getCanonicalFileName, oldState) as BuilderProgramState;
         state.program = newProgram;
         const compilerOptions = newProgram.getCompilerOptions();
@@ -63,11 +113,13 @@ namespace ts {
                 Debug.assert(!oldState.affectedFiles && (!oldState.currentAffectedFilesSignatures || !oldState.currentAffectedFilesSignatures.size), "Cannot reuse if only few affected files of currentChangedFile were iterated");
             }
             if (canCopySemanticDiagnostics) {
-                Debug.assert(!forEachKey(oldState.changedFilesSet, path => oldState.semanticDiagnosticsPerFile.has(path)), "Semantic diagnostics shouldnt be available for changed files");
+                Debug.assert(!oldState.changedFilesSet || !forEachKey(oldState.changedFilesSet, path => oldState.semanticDiagnosticsPerFile.has(path)), "Semantic diagnostics shouldnt be available for changed files");
             }
 
             // Copy old state's changed files set
-            copyEntries(oldState.changedFilesSet, state.changedFilesSet);
+            if (oldState.changedFilesSet) {
+                copyEntries(oldState.changedFilesSet, state.changedFilesSet);
+            }
         }
 
         // Update changed files and copy semantic diagnostics if we can
@@ -215,7 +267,7 @@ namespace ts {
     export interface BuilderCreationParameters {
         newProgram: Program;
         host: BuilderProgramHost;
-        oldProgram: BuilderProgram | undefined;
+        oldProgram: ReusableBuilderProgram | BuilderProgram | undefined;
         configFileParsingDiagnostics: ReadonlyArray<Diagnostic>;
     }
 
@@ -305,6 +357,7 @@ namespace ts {
          */
         function emitNextAffectedFile(writeFile?: WriteFileCallback, cancellationToken?: CancellationToken, emitOnlyDtsFiles?: boolean, customTransformers?: CustomTransformers): AffectedFileResult<EmitResult> {
             const affected = getNextAffectedFile(state, cancellationToken, computeHash);
+            sys.write(`affected: ${affected}`);
             if (!affected) {
                 // Done
                 return undefined;

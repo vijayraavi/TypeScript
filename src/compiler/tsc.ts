@@ -119,6 +119,13 @@ namespace ts {
                 reportWatchModeWithoutSysSupport();
                 createWatchOfConfigFile(configParseResult, commandLineOptions);
             }
+            else if (configParseResult.options.incremental) {
+                if (!sys.getModifiedTime) {
+                    reportDiagnostic(createCompilerDiagnostic(Diagnostics.The_current_host_does_not_support_the_0_option, "--incremental"));
+                    sys.exit(ExitStatus.DiagnosticsPresent_OutputsSkipped);
+                }
+                performIncrementalCompilation(configParseResult.fileNames, configParseResult.options, configFileName, getConfigFileParsingDiagnostics(configParseResult));
+            }
             else {
                 performCompilation(configParseResult.fileNames, configParseResult.projectReferences, configParseResult.options, getConfigFileParsingDiagnostics(configParseResult));
             }
@@ -156,6 +163,190 @@ namespace ts {
         const program = createProgram(programOptions);
         const exitStatus = emitFilesAndReportErrors(program, reportDiagnostic, s => sys.write(s + sys.newLine));
         reportStatistics(program);
+        return sys.exit(exitStatus);
+    }
+
+    function getObjectToJsonStringify<T>(map: ReadonlyMap<T>): MapLike<T> {
+        const result: MapLike<T> = {};
+        map.forEach((value, key) => result[key] = value);
+        return result;
+    }
+
+    function getObjectToJsonStrigifyMapOfSet(map: ReadonlyMap<ReadonlyMap<true>> | undefined): MapLike<ReadonlyArray<string>>| undefined {
+        if (!map) return undefined;
+        const result: MapLike<string[]> = {};
+        map.forEach((value, key) => {
+            result[key] = arrayFrom(value.keys());
+        });
+        return result;
+    }
+
+    function getObjectFromJsonParseMapOfSet(mapLike: MapLike<ReadonlyArray<string>> | undefined): Map<ReadonlyMap<true>> | undefined {
+        if (!mapLike) return undefined;
+        const result = createMap<ReadonlyMap<true>>();
+        createMapFromTemplate(mapLike).forEach((value, key) => {
+            result.set(key, arrayToSet(value));
+        });
+        return result;
+    }
+
+    interface DiagnosticJson {
+        file: Path | undefined;
+        start: number | undefined;
+        length: number | undefined;
+        messageText: string | DiagnosticMessageChain;
+        category: DiagnosticCategory;
+        /** May store more in future. For now, this will simply be `true` to indicate when a diagnostic is an unused-identifier diagnostic. */
+        reportsUnnecessary?: {};
+        code: number;
+        source?: string;
+    }
+
+    function getObjectToJsonStringifyMapOfDiagnostics(map: ReadonlyMap<ReadonlyArray<Diagnostic>> | undefined): MapLike<ReadonlyArray<DiagnosticJson>> | undefined {
+        if (!map) return undefined;
+        const result: MapLike<ReadonlyArray<DiagnosticJson>> = {};
+        map.forEach((value, key) => {
+            result[key] = value.map(d => ({
+                file: d.file && d.file.path,
+                start: d.start,
+                length: d.length,
+                messageText: d.messageText,
+                category: d.category,
+                /** May store more in future. For now, this will simply be `true` to indicate when a diagnostic is an unused-identifier diagnostic. */
+                reportsUnnecessary: d.reportsUnnecessary,
+                code: d.code,
+                source: d.source
+            }));
+        });
+        return result;
+    }
+
+    function getObjectToJsonParseMapOfDiagnostics(mapOfDianostics: Map<ReadonlyArray<DiagnosticJson>> | undefined, newProgram: Program): ReusableSemanticDiagnostics | undefined {
+        if (!map) return undefined;
+        const result = createMap<ReadonlyArray<Diagnostic | undefined>>();
+        return {
+            get: getDiagnostic,
+            has: key => getDiagnostic(key) !== undefined
+        };
+
+        function getDiagnostic(key: string): ReadonlyArray<Diagnostic> | undefined {
+            if (result.has(key)) return result.get(key);
+
+            if (!newProgram.getSourceFileByPath(key as Path)) return setDiagnostic(key, undefined);
+
+            const existing = mapOfDianostics.get(key);
+            if (!existing) return setDiagnostic(key, undefined);
+
+            let diagnostics: Diagnostic[] | undefined;
+            for (const d of existing) {
+                let file: SourceFile | undefined;
+                if (d.file) {
+                    file = newProgram.getSourceFileByPath(d.file);
+                    if (!file) {
+                        return setDiagnostic(key, undefined);
+                    }
+                }
+                (diagnostics || (diagnostics = [])).push({
+                    file,
+                    start: d.start,
+                    length: d.length,
+                    messageText: d.messageText,
+                    category: d.category,
+                    /** May store more in future. For now, this will simply be `true` to indicate when a diagnostic is an unused-identifier diagnostic. */
+                    reportsUnnecessary: d.reportsUnnecessary,
+                    code: d.code,
+                    source: d.source
+                });
+            }
+
+            return setDiagnostic(key, diagnostics || emptyArray);
+        }
+
+        function setDiagnostic(key: string, value: ReadonlyArray<Diagnostic> | undefined) {
+            result.set(key, value);
+            return value;
+        }
+    }
+
+    interface BuilderProgramJson {
+        fileInfos: MapLike<BuilderState.FileInfo>;
+        referencedMap: MapLike<ReadonlyArray<string>>;
+        semanticDiagnosticsPerFile: MapLike<ReadonlyArray<DiagnosticJson>>;
+        options: CompilerOptions
+    }
+
+    function readBuilderState(statePath: string): BuilderProgramJson {
+        if (!sys.fileExists(statePath)) {
+            return undefined;
+        }
+
+        try {
+            return JSON.parse(sys.readFile(statePath));
+        }
+        catch  {
+            return undefined;
+        }
+    }
+
+    function toReusableBuilderState(state: BuilderProgramJson, newProgram: Program): ReusableBuilderProgramState {
+        const mapOfDianostics = createMapFromTemplate(state.semanticDiagnosticsPerFile);
+        return {
+            fileInfos: createMapFromTemplate(state.fileInfos),
+            referencedMap: getObjectFromJsonParseMapOfSet(state.referencedMap),
+            semanticDiagnosticsPerFile: getObjectToJsonParseMapOfDiagnostics(mapOfDianostics, newProgram)
+        };
+    }
+
+    function writeBuilderState(statePath: string, program: BuilderProgram) {
+        const state = program.getState();
+        program.getConfigFileParsingDiagnostics();
+        const jsonState: BuilderProgramJson = {
+            fileInfos: getObjectToJsonStringify(state.fileInfos),
+            referencedMap: getObjectToJsonStrigifyMapOfSet(state.referencedMap),
+            semanticDiagnosticsPerFile: getObjectToJsonStringifyMapOfDiagnostics(state.semanticDiagnosticsPerFile),
+            options: program.getCompilerOptions()
+        };
+        sys.writeFile(statePath, (<any>JSON.stringify)(jsonState, "\n", " "));
+    }
+
+    function performIncrementalCompilation(rootFileNames: string[], compilerOptions: CompilerOptions, configFileName: string, configFileParsingDiagnostics: ReadonlyArray<Diagnostic>) {
+        sys.write("performing incremental compilation\n")
+        const compilerHost = createCompilerHost(compilerOptions);
+        const existingGetSourceFile = compilerHost.getSourceFile;
+        compilerHost.getSourceFile = (fileName, languageVersion, onError) => {
+            const sourceFile = existingGetSourceFile(fileName, languageVersion, onError);
+            if (sourceFile) sourceFile.version = sys.getModifiedTime(fileName).toUTCString();
+            return sourceFile;
+        };
+        const builderHost: BuilderProgramHost = {
+            createHash: (s => sys.createHash(s)),
+            useCaseSensitiveFileNames: () => sys.useCaseSensitiveFileNames,
+            writeFile: (fileName, data, writeByteOrderMark, onError, sourceFiles) => {
+                compilerHost.writeFile(fileName, data, writeByteOrderMark, onError, sourceFiles);
+            }
+        };
+
+        const statePath = combinePaths(getDirectoryPath(configFileName), "tsconfig.state.json");
+        sys.write(`statePath: ${statePath}\n`);
+        const state = readBuilderState(statePath);
+        const canUseState = state && !changeInOptionsNeedNewSourceFile(state.options, compilerOptions);
+        sys.write(`canUseState: ${canUseState}\n`);
+
+        enableStatistics(compilerOptions);
+        const program = createProgram(rootFileNames, compilerOptions, compilerHost, /*oldProgram*/ undefined, configFileParsingDiagnostics);
+
+        const reusableBuilderState = canUseState && toReusableBuilderState(state, program);
+        const newProgram = createBuilderProgram(BuilderProgramKind.EmitAndSemanticDiagnosticsBuilderProgram, {
+            newProgram: program,
+            configFileParsingDiagnostics,
+            oldProgram: canUseState && {
+                getState: () => reusableBuilderState
+            },
+            host: builderHost
+        });
+        const exitStatus = emitFilesAndReportErrors(newProgram, reportDiagnostic, s => sys.write(s + sys.newLine));
+        reportStatistics(program);
+        writeBuilderState(statePath, newProgram);
         return sys.exit(exitStatus);
     }
 
